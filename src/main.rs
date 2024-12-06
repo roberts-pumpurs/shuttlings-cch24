@@ -136,6 +136,7 @@ struct Order {
 #[axum::debug_handler]
 async fn manifest(headers: HeaderMap, body: Bytes) -> Response {
     let invalid_response = || Response::builder().status(204).body(Body::empty()).unwrap();
+    let invalid_media_type = || Response::builder().status(415).body(Body::empty()).unwrap();
     let invalid_manifest = || {
         Response::builder()
             .status(400)
@@ -153,16 +154,31 @@ async fn manifest(headers: HeaderMap, body: Bytes) -> Response {
         dbg!("content type header not present");
         return invalid_response();
     };
-    if content_type != "application/toml" {
-        dbg!("invalid content type");
-        return invalid_response();
-    }
 
-    let manifest = cargo_manifest::Manifest::<Metadata>::from_slice_with_metadata(&body);
-    let Ok(manifest) = manifest else {
-        dbg!(&manifest);
-        dbg!("invalid manifest");
-        return invalid_manifest();
+    let manifest = match content_type.to_str().unwrap_or("") {
+        "application/toml" => {
+            let Ok(metadata) =
+                cargo_manifest::Manifest::<Metadata>::from_slice_with_metadata(&body)
+            else {
+                return invalid_manifest();
+            };
+            metadata
+        }
+        "application/yaml" => {
+            let Ok(metadata) = serde_yaml::from_slice::<cargo_manifest::Manifest<Metadata>>(&body)
+            else {
+                return invalid_manifest();
+            };
+            metadata
+        }
+        "application/json" => {
+            let Ok(metadata) = serde_json::from_slice::<cargo_manifest::Manifest<Metadata>>(&body)
+            else {
+                return invalid_manifest();
+            };
+            metadata
+        }
+        _ => return invalid_media_type(),
     };
 
     let has_magic_keyword = manifest

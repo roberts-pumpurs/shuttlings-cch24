@@ -11,4 +11,6 @@ tokio = "1.28.2"
 serde = { version = "1", features = ["derive"] }
 itertools = "0.13"
 toml = "0.8"
+serde_yaml = "0.9"
+serde_json = "1"
 cargo-manifest = "0.17"
