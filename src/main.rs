@@ -142,6 +142,12 @@ async fn manifest(headers: HeaderMap, body: Bytes) -> Response {
             .body(Body::new("Invalid manifest".to_string()))
             .unwrap()
     };
+    let magic_keywrod_not_present = || {
+        Response::builder()
+            .status(400)
+            .body(Body::new("Magic keyword not provided".to_string()))
+            .unwrap()
+    };
 
     let Some(content_type) = headers.get("Content-Type") else {
         dbg!("content type header not present");
@@ -158,6 +164,22 @@ async fn manifest(headers: HeaderMap, body: Bytes) -> Response {
         dbg!("invalid manifest");
         return invalid_manifest();
     };
+
+    let has_magic_keyword = manifest
+        .package
+        .as_ref()
+        .and_then(|x| x.keywords.as_ref())
+        .map(|x| match x {
+            cargo_manifest::MaybeInherited::Inherited { .. } => false,
+            cargo_manifest::MaybeInherited::Local(keyw) => keyw
+                .into_iter()
+                .find(|x| x.as_str() == "Christmas 2024")
+                .is_some(),
+        })
+        .unwrap_or_default();
+    if !has_magic_keyword {
+        return magic_keywrod_not_present();
+    }
 
     let Some(metadata) = manifest.package.and_then(|m| m.metadata) else {
         dbg!("metadata manifest key not present");
