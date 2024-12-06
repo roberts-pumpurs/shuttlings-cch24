@@ -124,7 +124,7 @@ async fn v6_key(params: Query<V6KeyQParams>) -> String {
 
 #[derive(serde::Deserialize, Debug)]
 struct Metadata {
-    orders: Vec<Order>,
+    orders: Option<Vec<Order>>,
 }
 
 #[derive(serde::Deserialize, Debug)]
@@ -136,7 +136,12 @@ struct Order {
 #[axum::debug_handler]
 async fn manifest(headers: HeaderMap, body: Bytes) -> Response {
     let invalid_response = || Response::builder().status(204).body(Body::empty()).unwrap();
-    let invalid_manifest = || Response::builder().status(400).body(Body::empty()).unwrap();
+    let invalid_manifest = || {
+        Response::builder()
+            .status(400)
+            .body(Body::new("Invalid manifest".to_string()))
+            .unwrap()
+    };
 
     let Some(content_type) = headers.get("Content-Type") else {
         dbg!("content type header not present");
@@ -159,8 +164,12 @@ async fn manifest(headers: HeaderMap, body: Bytes) -> Response {
         return invalid_response();
     };
 
-    let (counter, valid_orders) = metadata
-        .orders
+    let Some(orders) = metadata.orders else {
+        dbg!("metadata orders key not present");
+        return invalid_response();
+    };
+
+    let (counter, valid_orders) = orders
         .into_iter()
         .filter_map(|order| {
             let item = match order.item? {
