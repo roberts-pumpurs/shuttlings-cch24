@@ -1,6 +1,8 @@
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
-    ops::BitXor,
+    ops::{BitXor, Div},
+    sync::atomic::{AtomicPtr, AtomicU64, AtomicU8, Ordering},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use axum::{
@@ -243,6 +245,90 @@ async fn manifest(headers: HeaderMap, body: Bytes) -> Response {
         .unwrap()
 }
 
+fn encode_state(bucket_size: u8, timestamp_ms: u64) -> u64 {
+    let mut encoded = [0_u8; 8];
+    for (idx, byte) in timestamp_ms.to_le_bytes().into_iter().enumerate().skip(1) {
+        encoded[idx] = byte;
+    }
+    encoded[0] = bucket_size;
+    u64::from_le_bytes(encoded)
+}
+
+fn decode_state(state: u64) -> (u8, u64) {
+    let mut bytes = state.to_le_bytes();
+    let bucket_size = bytes[0];
+    let timestamp_ms = {
+        bytes[0] = 0;
+        u64::from_le_bytes(bytes)
+    };
+    (bucket_size, timestamp_ms)
+}
+
+#[test]
+fn test_encode_round_trip() {
+    let bucket_size = 10;
+    let timestamp_ms = 1_614_000_000_000u64; // Example timestamp
+    let encoded = encode_state(bucket_size, timestamp_ms);
+    let (d_bucket_size, d_timestamp_ms) = decode_state(encoded);
+
+    assert_eq!(bucket_size, d_bucket_size,);
+    assert_eq!(timestamp_ms, d_timestamp_ms,);
+}
+
+async fn milk() -> Response {
+    const MAX_BUCKET_SIZE: u64 = 5;
+    const REFILL_TIME_MS: u64 = 1_000;
+    const SINGLE_WITHDRAWAL_MILK: u64 = 1;
+
+    static BUCKET_STATE: AtomicU64 = AtomicU64::new(0);
+
+    let success_resp = || {
+        Response::builder()
+            .status(200)
+            .body(Body::new("Milk withdrawn\n".to_string()))
+            .unwrap()
+    };
+    let no_milk_resp = || {
+        Response::builder()
+            .status(429)
+            .body(Body::new("No milk available\n".to_string()))
+            .unwrap()
+    };
+
+    // calculate the amount of time between the last time we withdrew a single milk
+    let has_milk = BUCKET_STATE.fetch_update(Ordering::Release, Ordering::Acquire, |old_state| {
+        let (old_size, old_ts) = decode_state(old_state);
+        dbg!(old_size);
+        dbg!(old_ts);
+
+        // calculate the amount of time between the last time we withdrew a single milk
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        let duration_since_last = now - old_ts;
+
+        let delta_to_refill = duration_since_last.div(REFILL_TIME_MS).min(MAX_BUCKET_SIZE);
+        dbg!(delta_to_refill);
+
+        if old_size == 0 && delta_to_refill == 0 {
+            return None;
+        }
+        let new_size = (old_size + (delta_to_refill as u8))
+            .min(MAX_BUCKET_SIZE as u8)
+            .saturating_sub(SINGLE_WITHDRAWAL_MILK as u8);
+        dbg!(new_size);
+
+        Some(encode_state(new_size, now))
+    });
+
+    if has_milk.is_ok() {
+        return success_resp();
+    }
+
+    return no_milk_resp();
+}
+
 #[shuttle_runtime::main]
 async fn main() -> shuttle_axum::ShuttleAxum {
     let router = Router::new()
@@ -252,7 +338,8 @@ async fn main() -> shuttle_axum::ShuttleAxum {
         .route("/2/key", get(key))
         .route("/2/v6/dest", get(v6_dest))
         .route("/2/v6/key", get(v6_key))
-        .route("/5/manifest", post(manifest));
+        .route("/5/manifest", post(manifest))
+        .route("/9/milk", post(milk));
 
     Ok(router.into())
 }
