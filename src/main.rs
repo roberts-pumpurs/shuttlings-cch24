@@ -15,6 +15,7 @@ use axum::{
     Router,
 };
 use itertools::Itertools;
+use serde::{Deserialize, Serialize};
 
 async fn hello_world() -> &'static str {
     "Hello, bird!"
@@ -275,31 +276,29 @@ fn test_encode_round_trip() {
     assert_eq!(timestamp_ms, d_timestamp_ms,);
 }
 
-async fn milk() -> Response {
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum Measurement {
+    Gallons(f32),
+    Liters(f32),
+    Litres(f32),
+    Pints(f32),
+}
+
+async fn milk(headers: HeaderMap, body: Bytes) -> Response {
     const MAX_BUCKET_SIZE: u64 = 5;
     const REFILL_TIME_MS: u64 = 1_000;
     const SINGLE_WITHDRAWAL_MILK: u64 = 1;
 
     static BUCKET_STATE: AtomicU64 = AtomicU64::new(0);
 
-    let success_resp = || {
-        Response::builder()
-            .status(200)
-            .body(Body::new("Milk withdrawn\n".to_string()))
-            .unwrap()
-    };
-    let no_milk_resp = || {
-        Response::builder()
-            .status(429)
-            .body(Body::new("No milk available\n".to_string()))
-            .unwrap()
-    };
+    let success_resp = || (StatusCode::OK, "Milk withdrawn\n");
+    let no_milk_resp = || (StatusCode::TOO_MANY_REQUESTS, "No milk available\n");
+    let bad_req = || (StatusCode::BAD_REQUEST);
 
     // calculate the amount of time between the last time we withdrew a single milk
     let has_milk = BUCKET_STATE.fetch_update(Ordering::Release, Ordering::Acquire, |old_state| {
         let (old_size, old_ts) = decode_state(old_state);
-        dbg!(old_size);
-        dbg!(old_ts);
 
         // calculate the amount of time between the last time we withdrew a single milk
         let now = SystemTime::now()
@@ -309,7 +308,6 @@ async fn milk() -> Response {
         let duration_since_last = now - old_ts;
 
         let delta_to_refill = duration_since_last.div(REFILL_TIME_MS).min(MAX_BUCKET_SIZE);
-        dbg!(delta_to_refill);
 
         if old_size == 0 && delta_to_refill == 0 {
             return None;
@@ -317,16 +315,39 @@ async fn milk() -> Response {
         let new_size = (old_size + (delta_to_refill as u8))
             .min(MAX_BUCKET_SIZE as u8)
             .saturating_sub(SINGLE_WITHDRAWAL_MILK as u8);
-        dbg!(new_size);
 
         Some(encode_state(new_size, now))
     });
 
-    if has_milk.is_ok() {
-        return success_resp();
+    if has_milk.is_err() {
+        return no_milk_resp().into_response();
     }
 
-    return no_milk_resp();
+    let is_json = headers
+        .get("Content-Type")
+        .map(|x| {
+            x.to_str()
+                .map(|x| x == "application/json")
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    if !is_json {
+        return success_resp().into_response();
+    }
+    let Ok(measurements) = serde_json::from_slice::<Measurement>(&body) else {
+        return bad_req().into_response();
+    };
+    let new_measurement = match measurements {
+        Measurement::Gallons(val) => Measurement::Liters(val * 3.78541),
+        Measurement::Liters(val) => Measurement::Gallons(val * (1.0 / 3.78541)),
+        Measurement::Litres(val) => Measurement::Pints(val * 1.75975),
+        Measurement::Pints(val) => Measurement::Litres(val * (1.0 / 1.75975)),
+    };
+    (
+        StatusCode::OK,
+        serde_json::to_string(&new_measurement).unwrap(),
+    )
+        .into_response()
 }
 
 #[shuttle_runtime::main]
