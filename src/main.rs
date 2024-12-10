@@ -285,13 +285,12 @@ enum Measurement {
     Pints(f32),
 }
 
+static BUCKET_STATE: AtomicU64 = AtomicU64::new(0);
+const MAX_BUCKET_SIZE: u64 = 5;
+const REFILL_TIME_MS: u64 = 1_000;
+const SINGLE_WITHDRAWAL_MILK: u64 = 1;
+
 async fn milk(headers: HeaderMap, body: Bytes) -> Response {
-    const MAX_BUCKET_SIZE: u64 = 5;
-    const REFILL_TIME_MS: u64 = 1_000;
-    const SINGLE_WITHDRAWAL_MILK: u64 = 1;
-
-    static BUCKET_STATE: AtomicU64 = AtomicU64::new(0);
-
     let success_resp = || (StatusCode::OK, "Milk withdrawn\n");
     let no_milk_resp = || (StatusCode::TOO_MANY_REQUESTS, "No milk available\n");
     let bad_req = || (StatusCode::BAD_REQUEST);
@@ -350,6 +349,16 @@ async fn milk(headers: HeaderMap, body: Bytes) -> Response {
         .into_response()
 }
 
+async fn refill() -> Response {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let new_state = encode_state(MAX_BUCKET_SIZE as u8, now);
+    BUCKET_STATE.swap(new_state, Ordering::AcqRel);
+    (StatusCode::OK,).into_response()
+}
+
 #[shuttle_runtime::main]
 async fn main() -> shuttle_axum::ShuttleAxum {
     let router = Router::new()
@@ -360,7 +369,8 @@ async fn main() -> shuttle_axum::ShuttleAxum {
         .route("/2/v6/dest", get(v6_dest))
         .route("/2/v6/key", get(v6_key))
         .route("/5/manifest", post(manifest))
-        .route("/9/milk", post(milk));
+        .route("/9/milk", post(milk))
+        .route("/9/refill", post(refill));
 
     Ok(router.into())
 }
