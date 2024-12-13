@@ -4,6 +4,7 @@ use axum::{
 };
 
 mod day_1;
+mod day_12;
 mod day_2;
 mod day_5;
 mod day_9;
@@ -19,7 +20,9 @@ async fn main() -> shuttle_axum::ShuttleAxum {
         .route("/2/v6/key", get(day_2::v6_key))
         .route("/5/manifest", post(day_5::manifest))
         .route("/9/milk", post(day_9::milk))
-        .route("/9/refill", post(day_9::refill));
+        .route("/9/refill", post(day_9::refill))
+        .route("/12/board", get(day_12::board))
+        .route("/12/reset", post(day_12::reset));
 
     Ok(router.into())
 }
