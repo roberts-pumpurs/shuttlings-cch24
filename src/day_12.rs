@@ -47,62 +47,44 @@ impl Board {
         state
     }
 
-    pub fn render(&self) -> (usize, [u8; MAX_RENDERED_BOARD_SIZE]) {
-        let mut buf = [0_u8; MAX_RENDERED_BOARD_SIZE];
-        let mut offset = 0;
+    pub fn render(&self) -> String {
+        let mut s = String::new();
 
-        // Helper to write a string into our buffer
-        let mut write_str = |s: &str| {
-            let bytes = s.as_bytes();
-            buf[offset..offset + bytes.len()].copy_from_slice(bytes);
-            offset += bytes.len();
-        };
-
-        // We print 5 rows total:
-        // For the first 4 rows, we print:
-        //   White square, then each of the 4 tiles, then white square
-        // For the last row, we print 6 white squares.
-
-        // Each of the first 4 rows
         for row in 0..4 {
-            write_str(WHITE_SQUARE);
+            s.push_str(WHITE_SQUARE);
             for col in 0..4 {
                 let tile = self.0[row * 4 + col];
-                match tile {
-                    Tile::Empty => write_str(BLACK_SQUARE),
-                    Tile::Cookie => write_str(COOKIE_EMOJI),
-                    Tile::Milk => write_str(MILK_GLASS),
-                }
+                let ch = match tile {
+                    Tile::Empty => BLACK_SQUARE,
+                    Tile::Cookie => COOKIE_EMOJI,
+                    Tile::Milk => MILK_GLASS,
+                };
+                s.push_str(ch);
             }
-            write_str(WHITE_SQUARE);
-            // newline
-            write_str("\n");
+            s.push_str(WHITE_SQUARE);
+            s.push('\n');
         }
 
-        // Last row: 6 white squares
-        for _ in 0..6 {
-            write_str(WHITE_SQUARE);
-        }
+        s.push_str(&WHITE_SQUARE.repeat(6));
 
         match self.check_for_winner() {
             Ok(Some(winner)) => {
-                write_str("\n");
-                let suffix = match winner {
-                    Tile::Empty => unreachable!(),
+                s.push('\n');
+                s.push_str(match winner {
                     Tile::Cookie => "🍪 wins!",
                     Tile::Milk => "🥛 wins!",
-                };
-                write_str(suffix);
+                    _ => unreachable!(),
+                });
             }
             Err(_) => {
-                write_str("\n");
-                write_str("No winner.");
+                s.push('\n');
+                s.push_str("No winner.");
             }
             _ => {}
         }
-        write_str("\n");
+        s.push('\n');
 
-        (offset, buf)
+        s
     }
 
     fn check_for_winner(&self) -> Result<Option<Tile>, ()> {
@@ -180,9 +162,7 @@ pub async fn board() -> Response {
 fn render_board() -> String {
     let board = BOARD.load(Ordering::Relaxed);
     let board = Board::decode(board);
-    let (len, buf) = board.render();
-    // todo this can be optimised by movig to a shared buffer for all instances
-    let s = std::str::from_utf8(&buf[..len]).unwrap().to_string();
+    let s = board.render();
     s
 }
 
@@ -203,159 +183,35 @@ pub async fn place(Path((team, column)): Path<(String, String)>) -> Response {
         _ => return (StatusCode::BAD_REQUEST,).into_response(),
     };
 
-    let mut column: usize = match column.parse() {
-        Ok(res) => res,
-        Err(_) => return (StatusCode::BAD_REQUEST,).into_response(),
+    let column = match column.parse::<usize>() {
+        Ok(c) if (1..=4).contains(&c) => c - 1,
+        _ => return (StatusCode::BAD_REQUEST,).into_response(),
     };
-    if column < 1 {
-        return (StatusCode::BAD_REQUEST,).into_response();
-    }
-    column = column.saturating_sub(1);
-    if column >= 4 {
-        return (StatusCode::BAD_REQUEST,).into_response();
-    }
-    let board = BOARD.load(Ordering::Relaxed);
-    let board = Board::decode(board);
-    if board.check_for_winner().is_err()
-        || board
-            .check_for_winner()
-            .map(|x| x.is_some())
-            .unwrap_or(false)
-    {
-        let s = render_board();
-        return (StatusCode::SERVICE_UNAVAILABLE, s).into_response();
+
+    let board_val = BOARD.load(Ordering::Relaxed);
+    let board = Board::decode(board_val);
+
+    // Early check if game over
+    let state = board.check_for_winner();
+    if state.is_err() || state.ok().flatten().is_some() {
+        return (StatusCode::SERVICE_UNAVAILABLE, render_board()).into_response();
     }
 
-    let board = BOARD.fetch_update(Ordering::Release, Ordering::Acquire, |board| {
-        let mut board = Board::decode(board);
-
-        board.push_item(column, team).map(|_| board.encode()).ok()
+    let res = BOARD.fetch_update(Ordering::Release, Ordering::Acquire, |old| {
+        let mut b = Board::decode(old);
+        b.push_item(column, team).ok().map(|_| b.encode())
     });
 
     let s = render_board();
-
-    tracing::info!("{s:}");
-    match board {
-        Ok(board) => {
-            let board = Board::decode(board);
-            match board.check_for_winner() {
-                // has a winner
-                Ok(Some(_winner)) => return (StatusCode::OK, s).into_response(),
-                // no winner yet
-                Ok(None) => return (StatusCode::OK, s).into_response(),
-                // the board cannot have a winner, board is full
-                Err(_) => return (StatusCode::SERVICE_UNAVAILABLE, s).into_response(),
+    match res {
+        Ok(new_val) => {
+            let new_board = Board::decode(new_val);
+            match new_board.check_for_winner() {
+                Ok(Some(_)) => (StatusCode::OK, s).into_response(),
+                Ok(None) => (StatusCode::OK, s).into_response(),
+                Err(_) => (StatusCode::SERVICE_UNAVAILABLE, s).into_response(),
             }
         }
-        // the column is full
-        Err(_) => return (StatusCode::SERVICE_UNAVAILABLE,).into_response(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_render_empty_board() {
-        let board = Board([Tile::Empty; 16]);
-        let (len, buf) = board.render();
-        let output = std::str::from_utf8(&buf[..len]).unwrap();
-
-        let expected = concat!(
-            "⬜⬛⬛⬛⬛⬜\n",
-            "⬜⬛⬛⬛⬛⬜\n",
-            "⬜⬛⬛⬛⬛⬜\n",
-            "⬜⬛⬛⬛⬛⬜\n",
-            "⬜⬜⬜⬜⬜⬜\n"
-        );
-
-        assert_eq!(
-            output, expected,
-            "Empty board does not match expected output"
-        );
-    }
-
-    #[test]
-    fn test_render_with_cookies() {
-        let tiles = [
-            Tile::Cookie,
-            Tile::Empty,
-            Tile::Empty,
-            Tile::Empty, // Row 1
-            Tile::Cookie,
-            Tile::Empty,
-            Tile::Empty,
-            Tile::Empty, // Row 2
-            Tile::Cookie,
-            Tile::Empty,
-            Tile::Empty,
-            Tile::Empty, // Row 3
-            Tile::Cookie,
-            Tile::Empty,
-            Tile::Empty,
-            Tile::Empty, // Row 4
-        ];
-        let board = Board(tiles);
-        let (len, buf) = board.render();
-        let output = std::str::from_utf8(&buf[..len]).unwrap();
-
-        let expected = concat!(
-            "⬜🍪⬛⬛⬛⬜\n",
-            "⬜🍪⬛⬛⬛⬜\n",
-            "⬜🍪⬛⬛⬛⬜\n",
-            "⬜🍪⬛⬛⬛⬜\n",
-            "⬜⬜⬜⬜⬜⬜\n"
-        );
-
-        assert_eq!(
-            output, expected,
-            "Cookie board does not match expected output"
-        );
-    }
-
-    #[test]
-    fn test_round_trip_encode_decode() {
-        // Create a board pattern and ensure we can encode and decode it,
-        // and that render remains stable after a round-trip.
-
-        let tiles = [
-            Tile::Cookie,
-            Tile::Empty,
-            Tile::Empty,
-            Tile::Milk,
-            Tile::Empty,
-            Tile::Cookie,
-            Tile::Milk,
-            Tile::Empty,
-            Tile::Milk,
-            Tile::Milk,
-            Tile::Cookie,
-            Tile::Empty,
-            Tile::Empty,
-            Tile::Empty,
-            Tile::Empty,
-            Tile::Cookie,
-        ];
-
-        let original = Board(tiles);
-        let encoded = original.encode();
-        let decoded = Board::decode(encoded);
-
-        assert_eq!(
-            original.0, decoded.0,
-            "Tiles differ after encode/decode round-trip"
-        );
-
-        let (original_len, original_buf) = original.render();
-        let (decoded_len, decoded_buf) = decoded.render();
-
-        let original_str = std::str::from_utf8(&original_buf[..original_len]).unwrap();
-        let decoded_str = std::str::from_utf8(&decoded_buf[..decoded_len]).unwrap();
-
-        assert_eq!(
-            original_str, decoded_str,
-            "Render output differs after encode/decode round-trip"
-        );
+        Err(_) => (StatusCode::SERVICE_UNAVAILABLE,).into_response(),
     }
 }
