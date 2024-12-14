@@ -1,29 +1,10 @@
-use std::{
-    cell::{Cell, LazyCell, RefCell},
-    ops::Div,
-    sync::{
-        atomic::{AtomicU64, AtomicU8, Ordering},
-        LazyLock, Mutex,
-    },
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use axum::{
-    body::Bytes,
-    http::{HeaderMap, StatusCode},
+    extract::Path,
+    http::StatusCode,
     response::{IntoResponse, Response},
 };
-use itertools::Itertools;
-use serde::{Deserialize, Serialize};
-
-fn encode_state(bucket_size: u8, timestamp_ms: u64) -> u64 {
-    let mut encoded = [0_u8; 8];
-    for (idx, byte) in timestamp_ms.to_le_bytes().into_iter().enumerate().skip(1) {
-        encoded[idx] = byte;
-    }
-    encoded[0] = bucket_size;
-    u64::from_le_bytes(encoded)
-}
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
@@ -102,36 +83,173 @@ impl Board {
         for _ in 0..6 {
             write_str(WHITE_SQUARE);
         }
+
+        match self.check_for_winner() {
+            Ok(Some(winner)) => {
+                write_str("\n");
+                let suffix = match winner {
+                    Tile::Empty => unreachable!(),
+                    Tile::Cookie => "🍪 wins!",
+                    Tile::Milk => "🥛 wins!",
+                };
+                write_str(suffix);
+            }
+            Err(_) => {
+                write_str("\n");
+                write_str("No winner.");
+            }
+            _ => {}
+        }
         write_str("\n");
 
         (offset, buf)
+    }
+
+    fn check_for_winner(&self) -> Result<Option<Tile>, ()> {
+        // Helper function to check if four tiles form a winning line
+        let is_winning_line =
+            |line: &[Tile]| line[0] != Tile::Empty && line.iter().all(|&t| t == line[0]);
+
+        // Check rows
+        for row in 0..4 {
+            let start = row * 4;
+            let line = &self.0[start..start + 4];
+            if is_winning_line(line) {
+                return Ok(Some(line[0]));
+            }
+        }
+
+        // Check columns
+        for col in 0..4 {
+            let line = self.get_col(col);
+            if is_winning_line(&line) {
+                return Ok(Some(line[0]));
+            }
+        }
+
+        // Check diagonals
+        let diag1 = [self.0[0], self.0[5], self.0[10], self.0[15]];
+        if is_winning_line(&diag1) {
+            return Ok(Some(diag1[0]));
+        }
+
+        let diag2 = [self.0[3], self.0[6], self.0[9], self.0[12]];
+        if is_winning_line(&diag2) {
+            return Ok(Some(diag2[0]));
+        }
+
+        // Check for draw: if no empty slots are left, it's a tie
+        if !self.0.contains(&Tile::Empty) {
+            Err(())
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn get_col(&self, col: usize) -> [Tile; 4] {
+        let line = [
+            self.0[col],
+            self.0[col + 4],
+            self.0[col + 8],
+            self.0[col + 12],
+        ];
+        line
+    }
+
+    fn push_item(&mut self, col_idx: usize, item: Tile) -> Result<(), ()> {
+        let col = self.get_col(col_idx);
+        let (idx_last_empty, _) = col
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_idx, x)| **x == Tile::Empty)
+            .ok_or(())?;
+        self.0[col_idx + (idx_last_empty * 4)] = item;
+        Ok(())
     }
 }
 
 static BOARD: AtomicU64 = AtomicU64::new(0);
 
 pub async fn board() -> Response {
-    // calculate the amount of time between the last time we withdrew a single milk
+    let s = render_board();
+
+    (StatusCode::OK, s).into_response()
+}
+
+fn render_board() -> String {
     let board = BOARD.load(Ordering::Relaxed);
     let board = Board::decode(board);
     let (len, buf) = board.render();
     // todo this can be optimised by movig to a shared buffer for all instances
     let s = std::str::from_utf8(&buf[..len]).unwrap().to_string();
+    s
+}
+
+pub async fn reset() -> Response {
+    let _board = BOARD
+        .fetch_update(Ordering::Release, Ordering::Acquire, |_old_state| Some(0))
+        .unwrap();
+
+    let s = render_board();
 
     (StatusCode::OK, s).into_response()
 }
 
-pub async fn reset() -> Response {
-    let board = BOARD
-        .fetch_update(Ordering::Release, Ordering::Acquire, |_old_state| Some(0))
-        .unwrap();
+pub async fn place(Path((team, column)): Path<(String, String)>) -> Response {
+    let team = match team.as_str() {
+        "cookie" => Tile::Cookie,
+        "milk" => Tile::Milk,
+        _ => return (StatusCode::BAD_REQUEST,).into_response(),
+    };
 
+    let mut column: usize = match column.parse() {
+        Ok(res) => res,
+        Err(_) => return (StatusCode::BAD_REQUEST,).into_response(),
+    };
+    if column < 1 {
+        return (StatusCode::BAD_REQUEST,).into_response();
+    }
+    column = column.saturating_sub(1);
+    if column >= 4 {
+        return (StatusCode::BAD_REQUEST,).into_response();
+    }
+    let board = BOARD.load(Ordering::Relaxed);
     let board = Board::decode(board);
-    let (len, buf) = board.render();
-    // todo this can be optimised by movig to a shared buffer for all instances
-    let s = std::str::from_utf8(&buf[..len]).unwrap().to_string();
+    if board.check_for_winner().is_err()
+        || board
+            .check_for_winner()
+            .map(|x| x.is_some())
+            .unwrap_or(false)
+    {
+        let s = render_board();
+        return (StatusCode::SERVICE_UNAVAILABLE, s).into_response();
+    }
 
-    (StatusCode::OK, s).into_response()
+    let board = BOARD.fetch_update(Ordering::Release, Ordering::Acquire, |board| {
+        let mut board = Board::decode(board);
+
+        board.push_item(column, team).map(|_| board.encode()).ok()
+    });
+
+    let s = render_board();
+
+    tracing::info!("{s:}");
+    match board {
+        Ok(board) => {
+            let board = Board::decode(board);
+            match board.check_for_winner() {
+                // has a winner
+                Ok(Some(_winner)) => return (StatusCode::OK, s).into_response(),
+                // no winner yet
+                Ok(None) => return (StatusCode::OK, s).into_response(),
+                // the board cannot have a winner, board is full
+                Err(_) => return (StatusCode::SERVICE_UNAVAILABLE, s).into_response(),
+            }
+        }
+        // the column is full
+        Err(_) => return (StatusCode::SERVICE_UNAVAILABLE,).into_response(),
+    }
 }
 
 #[cfg(test)]

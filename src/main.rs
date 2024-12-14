@@ -1,7 +1,13 @@
+use std::time::Duration;
+
 use axum::{
+    body::Body,
+    http::{Request, Response},
     routing::{get, post},
     Router,
 };
+use tower_http::trace::TraceLayer;
+use tracing::Span;
 
 mod day_1;
 mod day_12;
@@ -22,7 +28,19 @@ async fn main() -> shuttle_axum::ShuttleAxum {
         .route("/9/milk", post(day_9::milk))
         .route("/9/refill", post(day_9::refill))
         .route("/12/board", get(day_12::board))
-        .route("/12/reset", post(day_12::reset));
+        .route("/12/reset", post(day_12::reset))
+        .route("/12/place/:team/:column", post(day_12::place))
+        .layer(TraceLayer::new_for_http().make_span_with(|req: &Request<Body>| {
+            tracing::info_span!("", method = %req.method(), uri = %req.uri())
+        }).on_response(|res: &Response<Body>, latency: Duration, _span: &Span| {
+            if res.status().is_server_error() {
+                tracing::error!(status = %res.status().as_u16(), latency = ?latency);
+            } else if res.status().is_client_error() {
+                tracing::warn!(status = %res.status().as_u16(), latency = ?latency);
+            } else {
+                tracing::info!(status = %res.status().as_u16(), latency = ?latency);
+            }
+        }).on_failure(()));
 
     Ok(router.into())
 }
