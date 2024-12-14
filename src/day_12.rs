@@ -1,10 +1,14 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc, Mutex,
+};
 
 use axum::{
-    extract::Path,
+    extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use rand::{rngs::StdRng, Rng, SeedableRng};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
@@ -21,8 +25,6 @@ const WHITE_SQUARE: &str = "⬜";
 const COOKIE_EMOJI: &str = "🍪";
 const BLACK_SQUARE: &str = "⬛";
 const MILK_GLASS: &str = "🥛";
-
-const MAX_RENDERED_BOARD_SIZE: usize = 128;
 
 impl Board {
     pub fn decode(state: u64) -> Self {
@@ -45,6 +47,17 @@ impl Board {
             state |= (tile as u64) << (2 * i);
         }
         state
+    }
+
+    pub fn new_random(rng: &mut rand::rngs::StdRng) -> Self {
+        let mut board = [Tile::Empty; 16];
+        for item in board.iter_mut() {
+            *item = match rng.gen::<bool>() {
+                true => Tile::Cookie,
+                false => Tile::Milk,
+            }
+        }
+        Self(board)
     }
 
     pub fn render(&self) -> String {
@@ -166,10 +179,25 @@ fn render_board() -> String {
     s
 }
 
-pub async fn reset() -> Response {
+pub async fn reset(State(rng): State<Arc<Mutex<StdRng>>>) -> Response {
+    let mut rng = rng.lock().unwrap();
+    *rng = rand::rngs::StdRng::seed_from_u64(2024);
+    drop(rng);
+
     let _board = BOARD
         .fetch_update(Ordering::Release, Ordering::Acquire, |_old_state| Some(0))
         .unwrap();
+
+    let s = render_board();
+
+    (StatusCode::OK, s).into_response()
+}
+
+pub async fn random_board(State(rng): State<Arc<Mutex<StdRng>>>) -> Response {
+    let mut rng = rng.lock().unwrap();
+    let board = Board::new_random(&mut rng);
+    drop(rng);
+    BOARD.store(board.encode(), Ordering::Relaxed);
 
     let s = render_board();
 
