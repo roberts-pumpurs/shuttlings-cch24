@@ -1,3 +1,5 @@
+#![feature(portable_simd)]
+
 use std::{
     sync::{Arc, Mutex},
     time::Duration,

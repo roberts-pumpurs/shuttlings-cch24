@@ -1,6 +1,11 @@
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc, Mutex,
+use core::simd;
+use std::{
+    ops::AddAssign,
+    simd::{num::SimdInt, Simd},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use axum::{
@@ -11,11 +16,11 @@ use axum::{
 use rand::{rngs::StdRng, Rng, SeedableRng};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-#[repr(u8)]
+#[repr(i8)]
 enum Tile {
-    Empty,
-    Cookie,
-    Milk,
+    Empty = 0,
+    Cookie = -1,
+    Milk = 1,
 }
 
 // row-major board
@@ -44,6 +49,11 @@ impl Board {
     pub fn encode(&self) -> u64 {
         let mut state = 0_u64;
         for (i, &tile) in self.0.iter().enumerate() {
+            let tile = match tile {
+                Tile::Empty => 0,
+                Tile::Cookie => 1,
+                Tile::Milk => 2,
+            };
             state |= (tile as u64) << (2 * i);
         }
         state
@@ -101,36 +111,54 @@ impl Board {
     }
 
     fn check_for_winner(&self) -> Result<Option<Tile>, ()> {
-        // Helper function to check if four tiles form a winning line
-        let is_winning_line =
-            |line: &[Tile]| line[0] != Tile::Empty && line.iter().all(|&t| t == line[0]);
-
-        // Check rows
-        for row in 0..4 {
-            let start = row * 4;
-            let line = &self.0[start..start + 4];
-            if is_winning_line(line) {
-                return Ok(Some(line[0]));
+        fn check_value(val: i8) -> Option<Tile> {
+            match val {
+                4 => Some(Tile::Milk),
+                -4 => Some(Tile::Cookie),
+                _ => None,
             }
         }
 
-        // Check columns
-        for col in 0..4 {
-            let line = self.get_col(col);
-            if is_winning_line(&line) {
-                return Ok(Some(line[0]));
+        // We'll keep track of row sums and column sums using SIMD vectors.
+        // Initialize everything to zero.
+        let mut winner_cols = Simd::from_array([0i8; 4]);
+        let mut winner_rows = [0i8; 4];
+
+        let mut winner_d_top_to_bot = 0i8;
+        let mut winner_d_bot_to_top = 0i8;
+
+        // Iterate through rows and zip them with the winner_rows iterator
+        for ((row, line), winner_row) in (0..4)
+            .zip(self.0.chunks_exact(4))
+            .zip(winner_rows.iter_mut())
+        {
+            let row_line =
+                Simd::from_array([line[0] as i8, line[1] as i8, line[2] as i8, line[3] as i8]);
+
+            // Update column sums using SIMD addition
+            winner_cols += row_line;
+
+            // Update the corresponding row sum using a SIMD reduction
+            *winner_row += row_line.reduce_sum();
+
+            // Update diagonals
+            winner_d_top_to_bot.add_assign(line[row] as i8);
+            winner_d_bot_to_top.add_assign(line[3 - row] as i8);
+        }
+        let winner_cols_arr = winner_cols.to_array();
+
+        // Combine all values into a single iterator
+        let diagonal_check = [winner_d_top_to_bot, winner_d_bot_to_top];
+        let all_results = winner_cols_arr
+            .iter()
+            .chain(winner_rows.iter())
+            .chain(diagonal_check.iter());
+
+        // Check each value
+        for &val in all_results {
+            if let Some(tile) = check_value(val) {
+                return Ok(Some(tile));
             }
-        }
-
-        // Check diagonals
-        let diag1 = [self.0[0], self.0[5], self.0[10], self.0[15]];
-        if is_winning_line(&diag1) {
-            return Ok(Some(diag1[0]));
-        }
-
-        let diag2 = [self.0[3], self.0[6], self.0[9], self.0[12]];
-        if is_winning_line(&diag2) {
-            return Ok(Some(diag2[0]));
         }
 
         // Check for draw: if no empty slots are left, it's a tie
