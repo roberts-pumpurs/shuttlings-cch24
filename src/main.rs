@@ -20,6 +20,7 @@ mod day_12;
 mod day_16;
 mod day_19;
 mod day_2;
+mod day_23;
 mod day_5;
 mod day_9;
 
@@ -56,6 +57,7 @@ async fn main(#[shuttle_shared_db::Postgres] pool: sqlx::PgPool) -> shuttle_axum
         .route("/19/undo/:id", put(day_19::undo))
         .route("/19/draft", post(day_19::draft))
         .route("/19/list", get(day_19::list))
+        .route("/23/star", get(day_23::star))
         .nest_service("/assets", ServeDir::new("assets"))
         .with_state(pool)
         .layer(TraceLayer::new_for_http().make_span_with(|req: &Request<Body>| {
