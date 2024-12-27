@@ -33,3 +33,26 @@ pub async fn colour_present(Path(colour): Path<String>) -> Result<Html<String>, 
 
     Ok(Html(html))
 }
+
+pub async fn ornament(
+    Path((state, n)): Path<(String, String)>,
+) -> Result<Html<String>, StatusCode> {
+    let (next_state, current_state) = match &*state {
+        "on" => ("off", "ornament on"),
+        "off" => ("on", "ornament"),
+        _ => return Err(StatusCode::IM_A_TEAPOT),
+    };
+
+    let html = html! {
+        div
+            .(current_state)
+            id={"ornament"(n)}
+            hx-get={"/23/ornament/"(next_state)"/"(n)}
+            hx-trigger="load delay:2s once"
+            hx-swap="outerHTML" {
+        }
+    }
+    .into_string();
+
+    Ok(Html(html))
+}

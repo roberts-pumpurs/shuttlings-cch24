@@ -59,6 +59,7 @@ async fn main(#[shuttle_shared_db::Postgres] pool: sqlx::PgPool) -> shuttle_axum
         .route("/19/list", get(day_19::list))
         .route("/23/star", get(day_23::star))
         .route("/23/present/:c", get(day_23::colour_present))
+        .route("/23/ornament/:state/:n", get(day_23::ornament))
         .nest_service("/assets", ServeDir::new("assets"))
         .with_state(pool)
         .layer(TraceLayer::new_for_http().make_span_with(|req: &Request<Body>| {
