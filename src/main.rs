@@ -42,6 +42,7 @@ async fn main() -> shuttle_axum::ShuttleAxum {
         .route("/12/random-board", get(day_12::random_board))
         .route("/16/wrap", post(day_16::wrap))
         .route("/16/unwrap", get(day_16::unwrap))
+        .route("/16/decode", post(day_16::decode))
         .with_state(Arc::new(Mutex::new(std_rng)))
         .layer(TraceLayer::new_for_http().make_span_with(|req: &Request<Body>| {
             tracing::info_span!("", method = %req.method(), uri = %req.uri())
