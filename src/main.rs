@@ -12,7 +12,7 @@ use axum::{
     Router,
 };
 use rand::SeedableRng;
-use tower_http::trace::TraceLayer;
+use tower_http::{services::ServeDir, trace::TraceLayer};
 use tracing::Span;
 
 mod day_1;
@@ -56,6 +56,7 @@ async fn main(#[shuttle_shared_db::Postgres] pool: sqlx::PgPool) -> shuttle_axum
         .route("/19/undo/:id", put(day_19::undo))
         .route("/19/draft", post(day_19::draft))
         .route("/19/list", get(day_19::list))
+        .nest_service("/assets", ServeDir::new("assets"))
         .with_state(pool)
         .layer(TraceLayer::new_for_http().make_span_with(|req: &Request<Body>| {
             tracing::info_span!("", method = %req.method(), uri = %req.uri())

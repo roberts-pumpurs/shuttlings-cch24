@@ -1,0 +1,9 @@
+[build]
+assets = [
+  "assets/*",
+]
+
+[deploy]
+include = [
+  "assets/*",
+]
