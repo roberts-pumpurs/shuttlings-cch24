@@ -17,6 +17,7 @@ use tracing::Span;
 
 mod day_1;
 mod day_12;
+mod day_16;
 mod day_2;
 mod day_5;
 mod day_9;
@@ -39,6 +40,8 @@ async fn main() -> shuttle_axum::ShuttleAxum {
         .route("/12/reset", post(day_12::reset))
         .route("/12/place/:team/:column", post(day_12::place))
         .route("/12/random-board", get(day_12::random_board))
+        .route("/16/wrap", post(day_16::wrap))
+        .route("/16/unwrap", get(day_16::unwrap))
         .with_state(Arc::new(Mutex::new(std_rng)))
         .layer(TraceLayer::new_for_http().make_span_with(|req: &Request<Body>| {
             tracing::info_span!("", method = %req.method(), uri = %req.uri())
